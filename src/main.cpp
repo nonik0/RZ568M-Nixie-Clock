@@ -1,21 +1,27 @@
-#include <WiFi.h>
-#include <ESPmDNS.h>
-#include <WiFiUdp.h>
 #include <ArduinoOTA.h>
-#include <SPI.h>
-//#include <SoftPWM.h>
+#include <ESP32Time.h>
+#include <ESPmDNS.h>
+#include <pwmWrite.h>
 #include <RTClib.h>
+#include <SPI.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
 #include "secrets.h"
-
-#define DEBUG
+#include "time.h"
 
 #define PWM_PIN         5 // turn tubes on/off or control with PWM
 #define EN_PIN          4 // latch pin of shift registers on drivers
 
-#define HOURS_DELAY    1000
+#define HOURS_MS_DELAY    1000
 #define SECS_MULTIPLE  10
 
-RTC_DS3231 rtc;
+const char* NtpServer = "pool.ntp.org";
+const long  GmtOffsetSecs = -28800;
+const int   DstOffsetSecs = 3600;
+
+ESP32Time espRtc;
+RTC_DS3231 ds3231Rtc;
+Pwm pwm;
 
 uint16_t nixieDigitArray[10]
 {
@@ -32,8 +38,7 @@ uint16_t nixieDigitArray[10]
 };
 
 void otaSetup() {
-  Serial.begin(115200);
-  Serial.println("Booting");
+  Serial.println("OTA setting up...");
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) {
@@ -103,19 +108,8 @@ int roundUpToMultiple(int second, int multiple) {
   return (new_second - second)*1000;
 }
     
-void delayToMultiple(int second, int multiple){
-  int delay_ms = roundUpToMultiple(second, multiple);
-  delay(delay_ms);
-}
-
 void cycleTo(byte tensDigit, byte onesDigit, int cycles) {
-#if defined(DEBUG)
-  Serial.print(tensDigit);
-  Serial.println(onesDigit);
-#endif
-  float delay_ms = 15;
-  //int cycle_time_ms = (cycles * 10) * delay_ms; // 3 cycles -> 1000, 1 cycle -> 333
-  
+  float delay_ms = 15; 
   int count = cycles * 10;
   while (count-- >= 0) {
     display(tensDigit, onesDigit);
@@ -126,120 +120,134 @@ void cycleTo(byte tensDigit, byte onesDigit, int cycles) {
   }
 }
 
-void swap(int *a, int *b)
-{
-    int temp = *a;
-    *a = *b;
-    *b = temp;
-}
-
-int digit1Order[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-int digit2Order[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-void shuffleDigitOrder()
-{
-    //int digitOrder[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-    for (int i = 9; i > 0; i--)
-    {
-        long j = random(0, 10);
-        swap(&digit2Order[i], &digit2Order[j]);
-
-        j = random(0, 10);
-        swap(&digit1Order[i], &digit1Order[j]);
+bool hourDisplayed = false;
+unsigned long displayDelayStart = 0;
+unsigned long displayDelayMs = 0;
+void handleDisplay() {
+  if ((millis() - displayDelayStart) > displayDelayMs) {
+    if (hourDisplayed) {     
+      int minute = espRtc.getMinute();
+      cycleTo(minute / 10, minute % 10, 1);
+      displayDelayMs = roundUpToMultiple(espRtc.getSecond(), SECS_MULTIPLE);
     }
-}
-
-void shuffleTo(byte tensDigit, byte onesDigit, int cycles) {
-  float delay_ms = 100/3.0;
-
-  while (cycles >= 0) {
-    shuffleDigitOrder();
-
-// #if defined(DEBUG)
-//     Serial.print("2: [");
-//     for(int i = 0; i < 10; i++) {
-//       Serial.print(digit2Order[i]);
-//       Serial.print(",");
-//     }
-//     Serial.println("]");
-
-//     Serial.print("1: [");
-//     for(int i = 0; i < 10; i++) {
-//       Serial.print(digit1Order[i]);
-//       Serial.print(",");
-//     }
-//     Serial.println("]");
-// #endif
-
-    for (int i = 0; i < 10; i++) {
-      display(digit2Order[i], digit1Order[i]);
-      delay(delay_ms);
+    else {
+      int hour = espRtc.getHour();
+      cycleTo(hour / 10, hour % 10, 10);
+      displayDelayMs = HOURS_MS_DELAY;
     }
 
-    cycles--;
+    hourDisplayed = !hourDisplayed;
+    displayDelayStart = millis();
   }
-
-  display(tensDigit, onesDigit);
 }
+
+int brightness = 0;
+unsigned long brightnessDelayStart = 0;
+unsigned long brightnessDelayMs = 0;
+void handleBrightness() {
+  if ((millis() - brightnessDelayStart) > brightnessDelayMs) {
+    Serial.println("[handleBrightness]");
+    //brightness = (brightness + 1) % 256;
+    Serial.print("PWM: ");Serial.println(brightness);
+    pwm.write(PWM_PIN, brightness);
+    brightnessDelayStart = millis();
+    brightnessDelayMs = 100;
+  }
+}
+
+bool adjustedOnce = true;
+unsigned long timeSyncDelayStart = 0;
+unsigned long timeSyncDelayMs = 10000;
+void handleTimeSync() {
+  if ((millis() - timeSyncDelayStart) > timeSyncDelayMs) {
+    Serial.println("[handleTimeSync]");
+
+    struct tm timeinfo;
+    getLocalTime(&timeinfo);
+
+    int yr = timeinfo.tm_year + 1900;
+    int mt = timeinfo.tm_mon + 1;
+    int dy = timeinfo.tm_mday;
+    int hr = timeinfo.tm_hour;
+    int mi = timeinfo.tm_min;
+    int se = timeinfo.tm_sec;
+
+    char format[] = "hh:mm:ss";
+    Serial.print("DS3231: ");Serial.println(ds3231Rtc.now().toString(format));
+    Serial.print("   ESP: ");Serial.println(espRtc.getTime());
+    Serial.print("   NTP: ");Serial.print(hr);Serial.print(":");Serial.print(mi);Serial.print(":");Serial.println(se);
+
+    // debug to test RTC drift
+    if (!adjustedOnce) {
+      Serial.println("Adjusting RTCs with NTP time");
+      ds3231Rtc.adjust(DateTime(yr, mt, dy, hr, mi, se));
+      espRtc.setTimeStruct(timeinfo);
+
+      adjustedOnce = true;
+    }
+    
+    timeSyncDelayStart = millis();
+    //timeSyncDelayMs = 1000*60*60*24*7; // 1 week
+    timeSyncDelayMs = 1000*60*10;
+  }
+}
+
+// unsigned long debugDelayStart = 0;
+// unsigned long debugDelayMs = 0;
+// void handleDebug() {
+//   if ((millis() - debugDelayStart) > debugDelayMs) {
+//     Serial.println("[handleDebug]");
+
+//     // DateTime now = rtc.now();
+//     // int hour = now.hour();
+//     // int minute = now.minute();
+//     // int second = now.second();
+//     // Serial.print(hour);Serial.print(":");Serial.print(minute);Serial.print(":");Serial.println(second);
+
+//     char format[] = "hh:mm:ss";
+//     Serial.print("DS3231: ");Serial.println(rtc.now().toString(format));
+//     Serial.print("   ESP: ");Serial.println(espRtc.getTime());
+//     Serial.print("  Temp: ");Serial.println(rtc.getTemperature());
+
+//     debugDelayStart = millis();
+//     debugDelayMs = 1000 * 60 * 1; // 10 min
+//   }
+// }
 
 void setup() 
 {
-#if defined(DEBUG)
-  Serial.begin(9600);
-#endif
+  Serial.begin(115200);
 
   // initalize Nixie driver pins
   pinMode(PWM_PIN, OUTPUT);
   pinMode(EN_PIN, OUTPUT);
   digitalWrite(PWM_PIN, HIGH);
   digitalWrite(EN_PIN, LOW);
-  //SoftPWMBegin();
-  //SoftPWMSet(PWM_PIN, 1);
   SPI.begin();
 
-  if (!rtc.begin()) {
-#if defined(DEBUG)
+  if (!ds3231Rtc.begin()) {
     Serial.println("Couldn't find RTC");
-#endif
     while (1);
   }
-  // TODO
-  //rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+
+  // NTP config
+  configTime(GmtOffsetSecs, DstOffsetSecs, NtpServer);
 
   display(0, 0);
-  digitalWrite(PWM_PIN, LOW);
-
-  //randomSeed(analogRead(A0));
+  pwm.write(PWM_PIN, 0);
+  //digitalWrite(PWM_PIN, LOW);
 
   otaSetup();
 
-#if defined(DEBUG)
-    Serial.println("Setup complete");
-#endif
+  Serial.println("Setup complete");
 }
-
-
-unsigned long nextSec = 0;
-unsigned long nextHour = 0;
 
 void loop() 
 {
-  // for(int i = 0; i <= 9; i++)
-  // {
-  //   SoftPWMSetPercent(PWM_PIN, (100 - brightnessArray[i%5]));
-  //   NixieDisplay(i, i);
-  //   delay(1000);
-  // }
-  // if (now.second() is multiple)
-  DateTime now = rtc.now();
-  int hour = now.hour() % 12;
-  cycleTo(hour / 10, hour % 10, 10);
-  delay(HOURS_DELAY);
-  int minute = now.minute();
-  cycleTo(minute / 10, minute % 10, 1);
-
-  // TODO: poll instead of delay
-  // delay to next seconds multiple (i.e. repeat at X:10, X:20, etc.)
-  delayToMultiple(now.second(), SECS_MULTIPLE);
-
+  handleDisplay();
+  //handleBrightness();
+  handleTimeSync();
   ArduinoOTA.handle();
+
+  //handleDebug();
 }
