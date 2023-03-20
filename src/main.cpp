@@ -9,11 +9,15 @@
 #include "secrets.h"
 #include "time.h"
 
-#define PWM_PIN         5 // turn tubes on/off or control with PWM
-#define EN_PIN          4 // latch pin of shift registers on drivers
+#define PWM_PIN                 5 // turn tubes on/off or control with PWM
+#define EN_PIN                  4 // latch pin of shift registers on drivers
 
-#define HOURS_MS_DELAY    1000
-#define SECS_MULTIPLE  10
+#define HOURS_MS_DELAY       1000
+#define SECS_MULTIPLE          10
+
+#define DAY_MODE_BRIGHTNESS     0
+#define NIGHT_MODE_BRIGHTNESS 200
+#define PWM_FREQUENCY         200
 
 const char* NtpServer = "pool.ntp.org";
 const long  GmtOffsetSecs = -28800;
@@ -141,17 +145,29 @@ void handleDisplay() {
   }
 }
 
-int brightness = 0;
 unsigned long brightnessDelayStart = 0;
-unsigned long brightnessDelayMs = 0;
+unsigned long brightnessDelayMs = 10000;
 void handleBrightness() {
   if ((millis() - brightnessDelayStart) > brightnessDelayMs) {
     Serial.println("[handleBrightness]");
-    //brightness = (brightness + 1) % 256;
-    Serial.print("PWM: ");Serial.println(brightness);
-    pwm.write(PWM_PIN, brightness);
+
+    int curMins = espRtc.getHour(true) * 60 + espRtc.getMinute();
+    int minsToDay = (6*60 - curMins) % 1440;
+    int minsToNight = (23*60 - curMins) % 1440;
+    Serial.print("    curMins: ");Serial.println(curMins);
+    Serial.print("  minsToDay: ");Serial.println(minsToDay);
+    Serial.print("minsToNight: ");Serial.println(minsToNight);
+
+    bool isNight = minsToDay < minsToNight;
+    int brightness = isNight ? NIGHT_MODE_BRIGHTNESS : DAY_MODE_BRIGHTNESS;
+    int delaySecs = isNight ? minsToNight : minsToDay;
+    Serial.print(" brightness: ");Serial.println(brightness);
+    Serial.print("  delaySecs: ");Serial.println(delaySecs);
+
+    pwm.write(PWM_PIN, brightness, 200);
+
     brightnessDelayStart = millis();
-    brightnessDelayMs = 100;
+    brightnessDelayMs = delaySecs * 1000; 
   }
 }
 
@@ -182,7 +198,7 @@ void handleTimeSync() {
       Serial.println("Adjusting RTCs with NTP time");
       ds3231Rtc.adjust(DateTime(yr, mt, dy, hr, mi, se));
       espRtc.setTimeStruct(timeinfo);
-
+      
       adjustedOnce = true;
     }
     
@@ -192,31 +208,10 @@ void handleTimeSync() {
   }
 }
 
-// unsigned long debugDelayStart = 0;
-// unsigned long debugDelayMs = 0;
-// void handleDebug() {
-//   if ((millis() - debugDelayStart) > debugDelayMs) {
-//     Serial.println("[handleDebug]");
-
-//     // DateTime now = rtc.now();
-//     // int hour = now.hour();
-//     // int minute = now.minute();
-//     // int second = now.second();
-//     // Serial.print(hour);Serial.print(":");Serial.print(minute);Serial.print(":");Serial.println(second);
-
-//     char format[] = "hh:mm:ss";
-//     Serial.print("DS3231: ");Serial.println(rtc.now().toString(format));
-//     Serial.print("   ESP: ");Serial.println(espRtc.getTime());
-//     Serial.print("  Temp: ");Serial.println(rtc.getTemperature());
-
-//     debugDelayStart = millis();
-//     debugDelayMs = 1000 * 60 * 1; // 10 min
-//   }
-// }
-
 void setup() 
 {
   Serial.begin(115200);
+  Serial.println("Starting setup...");
 
   // initalize Nixie driver pins
   pinMode(PWM_PIN, OUTPUT);
@@ -225,6 +220,7 @@ void setup()
   digitalWrite(EN_PIN, LOW);
   SPI.begin();
 
+  // RTC init
   if (!ds3231Rtc.begin()) {
     Serial.println("Couldn't find RTC");
     while (1);
@@ -233,9 +229,9 @@ void setup()
   // NTP config
   configTime(GmtOffsetSecs, DstOffsetSecs, NtpServer);
 
+  // tubes init
   display(0, 0);
   pwm.write(PWM_PIN, 0);
-  //digitalWrite(PWM_PIN, LOW);
 
   otaSetup();
 
@@ -245,9 +241,7 @@ void setup()
 void loop() 
 {
   handleDisplay();
-  //handleBrightness();
+  handleBrightness();
   handleTimeSync();
   ArduinoOTA.handle();
-
-  //handleDebug();
 }
