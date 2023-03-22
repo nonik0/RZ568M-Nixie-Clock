@@ -16,7 +16,7 @@
 #define SECS_MULTIPLE          10
 
 #define DAY_MODE_BRIGHTNESS     0
-#define NIGHT_MODE_BRIGHTNESS 200
+#define NIGHT_MODE_BRIGHTNESS 220
 #define PWM_FREQUENCY         200
 
 const char* NtpServer = "pool.ntp.org";
@@ -146,23 +146,23 @@ void handleDisplay() {
 }
 
 unsigned long brightnessDelayStart = 0;
-unsigned long brightnessDelayMs = 10000;
+unsigned long brightnessDelayMs = 3000;
 void handleBrightness() {
   if ((millis() - brightnessDelayStart) > brightnessDelayMs) {
     Serial.println("[handleBrightness]");
 
     int curMins = espRtc.getHour(true) * 60 + espRtc.getMinute();
-    int minsToDay = (6*60 - curMins) % 1440;
-    int minsToNight = (23*60 - curMins) % 1440;
-    Serial.print("    curMins: ");Serial.println(curMins);
-    Serial.print("  minsToDay: ");Serial.println(minsToDay);
-    Serial.print("minsToNight: ");Serial.println(minsToNight);
+    int minsToDay = (6*60 - curMins + 1440) % 1440;
+    int minsToNight = (23*60 - curMins + 1440) % 1440;
+    Serial.printf("    curMins: %u\n", curMins);
+    Serial.printf("  minsToDay: %u\n", minsToDay);
+    Serial.printf("minsToNight: %u\n", minsToNight);
 
     bool isNight = minsToDay < minsToNight;
     int brightness = isNight ? NIGHT_MODE_BRIGHTNESS : DAY_MODE_BRIGHTNESS;
     int delaySecs = isNight ? minsToNight : minsToDay;
-    Serial.print(" brightness: ");Serial.println(brightness);
-    Serial.print("  delaySecs: ");Serial.println(delaySecs);
+    Serial.printf(" brightness: %u\n", brightness);
+    Serial.printf("  delaySecs: %u\n", delaySecs);
 
     pwm.write(PWM_PIN, brightness, 200);
 
@@ -173,7 +173,7 @@ void handleBrightness() {
 
 bool adjustedOnce = true;
 unsigned long timeSyncDelayStart = 0;
-unsigned long timeSyncDelayMs = 10000;
+unsigned long timeSyncDelayMs = 5000; // easier to see in serial output
 void handleTimeSync() {
   if ((millis() - timeSyncDelayStart) > timeSyncDelayMs) {
     Serial.println("[handleTimeSync]");
@@ -189,16 +189,16 @@ void handleTimeSync() {
     int se = timeinfo.tm_sec;
 
     char format[] = "hh:mm:ss";
-    Serial.print("DS3231: ");Serial.println(ds3231Rtc.now().toString(format));
-    Serial.print("   ESP: ");Serial.println(espRtc.getTime());
-    Serial.print("   NTP: ");Serial.print(hr);Serial.print(":");Serial.print(mi);Serial.print(":");Serial.println(se);
+    Serial.printf("DS3231: %s\n", ds3231Rtc.now().toString(format));
+    Serial.printf("   ESP: %s\n", espRtc.getTime());
+    Serial.printf("   NTP: %02u:%02u:%02u\n", hr, mi, se);
 
     // debug to test RTC drift
     if (!adjustedOnce) {
       Serial.println("Adjusting RTCs with NTP time");
       ds3231Rtc.adjust(DateTime(yr, mt, dy, hr, mi, se));
       espRtc.setTimeStruct(timeinfo);
-      
+
       adjustedOnce = true;
     }
     
@@ -207,6 +207,25 @@ void handleTimeSync() {
     timeSyncDelayMs = 1000*60*10;
   }
 }
+
+// unsigned int cycleCount = 0;
+// unsigned long debugDelayStart = 0;
+// unsigned long debugDelayMs = 2000;
+// void handleDebug() {
+//   if ((millis() - debugDelayStart) > debugDelayMs) {
+//     Serial.println("[handleDebug]");
+
+//     unsigned long totalDelayMs = millis() - debugDelayStart;
+//     float cyclesPerSec = cycleCount / ( totalDelayMs / 1000.0 );
+
+//     Serial.printf("  cycleCount: %u\n", cycleCount);
+//     Serial.printf("totalDelayMs: %u\n", totalDelayMs);
+//     Serial.printf("cyclesPerSec: %f\n", cyclesPerSec);
+
+//     cycleCount = 0;
+//     debugDelayStart = millis();
+//   }
+// }
 
 void setup() 
 {
@@ -230,8 +249,8 @@ void setup()
   configTime(GmtOffsetSecs, DstOffsetSecs, NtpServer);
 
   // tubes init
-  display(0, 0);
-  pwm.write(PWM_PIN, 0);
+  // display(0, 0);
+  // pwm.write(PWM_PIN, 0);
 
   otaSetup();
 
@@ -240,8 +259,8 @@ void setup()
 
 void loop() 
 {
-  handleDisplay();
   handleBrightness();
+  handleDisplay();
   handleTimeSync();
   ArduinoOTA.handle();
 }
