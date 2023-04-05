@@ -1,45 +1,68 @@
 #include <ArduinoOTA.h>
 #include <ESP32Time.h>
 #include <ESPmDNS.h>
-#include <pwmWrite.h>
 #include <RTClib.h>
 #include <SPI.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <pwmWrite.h>
+
 #include "secrets.h"
 #include "time.h"
 
-#define PWM_PIN                 5 // turn tubes on/off or control with PWM
-#define EN_PIN                  4 // latch pin of shift registers on drivers
+#define PWM_PIN 5  // turn tubes on/off or control with PWM
+#define EN_PIN 4   // latch pin of shift registers on drivers
 
-#define HOURS_MS_DELAY       1000
-#define SECS_MULTIPLE          10
+#define HOURS_MS_DELAY 1000
+#define SECS_MULTIPLE 10
 
-#define DAY_MODE_BRIGHTNESS     0
+#define DAY_MODE_BRIGHTNESS 0
 #define NIGHT_MODE_BRIGHTNESS 220
-#define PWM_FREQUENCY         200
+#define PWM_FREQUENCY 200
 
-const char* NtpServer = "pool.ntp.org";
-const long  GmtOffsetSecs = -28800;
-const int   DstOffsetSecs = 3600;
+#define ANIMATION_REFRESH_MS 15
+
+// specific to Nixie sockets used
+const uint16_t nixieDigitArray[10]{
+    0b0000000000100000,  // 0
+    0b0000010000000000,  // 1
+    0b0000000001000000,  // 2
+    0b1000000000000000,  // 3
+    0b0000000010000000,  // 4
+    0b0001000000000000,  // 5
+    0b0000000000010000,  // 6
+    0b0100000000000000,  // 7
+    0b0000001000000000,  // 8
+    0b0000100000000000   // 9
+};
 
 ESP32Time espRtc;
 RTC_DS3231 ds3231Rtc;
 Pwm pwm;
+hw_timer_t* delayTimer;
 
-uint16_t nixieDigitArray[10]
-{
-  0b0000000000100000,  // 0
-  0b0000010000000000,  // 1
-  0b0000000001000000,  // 2
-  0b1000000000000000,  // 3
-  0b0000000010000000,  // 4
-  0b0001000000000000,  // 5
-  0b0000000000010000,  // 6
-  0b0100000000000000,  // 7
-  0b0000001000000000,  // 8
-  0b0000100000000000   // 9
-};
+// NTP config
+const char* NtpServer = "pool.ntp.org";
+const long GmtOffsetSecs = -28800;
+const int DstOffsetSecs = 3600;
+
+// used as timers in conjunction with countdownTimerISR
+volatile long animationDelayMs = 0;
+volatile long brightnessDelayMs = 3000;
+volatile long timeSyncDelayMs = 5000;
+
+// tracks state of animation
+byte tensDigit;
+byte onesDigit;
+int cyclesLeft;
+bool animation = false;
+bool hourDisplayed = false;
+
+void IRAM_ATTR delayTimerISR() {
+  animationDelayMs--;
+  brightnessDelayMs--;
+  timeSyncDelayMs--;
+}
 
 void otaSetup() {
   Serial.println("OTA setting up...");
@@ -51,44 +74,33 @@ void otaSetup() {
     ESP.restart();
   }
 
-  // Port defaults to 3232
-  // ArduinoOTA.setPort(3232);
-
-  // Hostname defaults to esp3232-[MAC]
-  //ArduinoOTA.setHostname("TinyS3");
-
-  // No authentication by default
-  // ArduinoOTA.setPassword("admin");
-
-  // Password can be set with it's md5 value as well
-  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
-  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
-
   ArduinoOTA
-    .onStart([]() {
-      String type;
-      if (ArduinoOTA.getCommand() == U_FLASH)
-        type = "sketch";
-      else // U_SPIFFS
-        type = "filesystem";
+      .onStart([]() {
+        String type;
+        if (ArduinoOTA.getCommand() == U_FLASH)
+          type = "sketch";
+        else  // U_SPIFFS
+          type = "filesystem";
 
-      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-      Serial.println("Start updating " + type);
-    })
-    .onEnd([]() {
-      Serial.println("\nEnd");
-    })
-    .onProgress([](unsigned int progress, unsigned int total) {
-      Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-    })
-    .onError([](ota_error_t error) {
-      Serial.printf("Error[%u]: ", error);
-      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-      else if (error == OTA_END_ERROR) Serial.println("End Failed");
-    });
+        Serial.println("Start updating " + type);
+      })
+      .onEnd([]() { Serial.println("\nEnd"); })
+      .onProgress([](unsigned int progress, unsigned int total) {
+        Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+      })
+      .onError([](ota_error_t error) {
+        Serial.printf("Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR)
+          Serial.println("Auth Failed");
+        else if (error == OTA_BEGIN_ERROR)
+          Serial.println("Begin Failed");
+        else if (error == OTA_CONNECT_ERROR)
+          Serial.println("Connect Failed");
+        else if (error == OTA_RECEIVE_ERROR)
+          Serial.println("Receive Failed");
+        else if (error == OTA_END_ERROR)
+          Serial.println("End Failed");
+      });
 
   ArduinoOTA.begin();
 
@@ -97,8 +109,7 @@ void otaSetup() {
   Serial.println(WiFi.localIP());
 }
 
-void display(uint8_t tube2, uint8_t tube1)
-{
+void display(uint8_t tube2, uint8_t tube1) {
   digitalWrite(EN_PIN, LOW);
   SPI.transfer(nixieDigitArray[tube2] >> 8);
   SPI.transfer(nixieDigitArray[tube2]);
@@ -109,51 +120,53 @@ void display(uint8_t tube2, uint8_t tube1)
 
 int roundUpToMultiple(int second, int multiple) {
   int new_second = ((second / multiple) + 1) * multiple;
-  return (new_second - second)*1000;
+  return (new_second - second);
 }
-    
-void cycleTo(byte tensDigit, byte onesDigit, int cycles) {
-  float delay_ms = 15; 
-  int count = cycles * 10;
-  while (count-- >= 0) {
-    display(tensDigit, onesDigit);
-    delay(delay_ms);
 
-    tensDigit = (tensDigit+1)%10;
-    onesDigit = (onesDigit+1)%10;
+void handleAnimation() {
+  if (animationDelayMs < 0) {
+    if (animation) {
+      display(tensDigit, onesDigit);
+      tensDigit = (tensDigit + 1) % 10;
+      onesDigit = (onesDigit + 1) % 10;
+      cyclesLeft--;
+
+      if (cyclesLeft >= 0) {
+        animationDelayMs = ANIMATION_REFRESH_MS;
+      } else {
+        animation = false;
+        animationDelayMs =
+            hourDisplayed
+                ? HOURS_MS_DELAY
+                : roundUpToMultiple(espRtc.getSecond(), SECS_MULTIPLE) * 1000;
+      }
+    } else {
+      if (hourDisplayed) {
+        int minute = espRtc.getMinute();
+        tensDigit = minute / 10;
+        onesDigit = minute % 10;
+        cyclesLeft = 1 * 10;
+      } else {
+        int hour = espRtc.getHour();
+        tensDigit = hour / 10;
+        onesDigit = hour % 10;
+        cyclesLeft = 10 * 10;
+      }
+
+      hourDisplayed = !hourDisplayed;
+      animation = true;
+      animationDelayMs = ANIMATION_REFRESH_MS;
+    }
   }
 }
 
-bool hourDisplayed = false;
-unsigned long displayDelayStart = 0;
-unsigned long displayDelayMs = 0;
-void handleDisplay() {
-  if ((millis() - displayDelayStart) > displayDelayMs) {
-    if (hourDisplayed) {     
-      int minute = espRtc.getMinute();
-      cycleTo(minute / 10, minute % 10, 1);
-      displayDelayMs = roundUpToMultiple(espRtc.getSecond(), SECS_MULTIPLE);
-    }
-    else {
-      int hour = espRtc.getHour();
-      cycleTo(hour / 10, hour % 10, 10);
-      displayDelayMs = HOURS_MS_DELAY;
-    }
-
-    hourDisplayed = !hourDisplayed;
-    displayDelayStart = millis();
-  }
-}
-
-unsigned long brightnessDelayStart = 0;
-unsigned long brightnessDelayMs = 3000;
 void handleBrightness() {
-  if ((millis() - brightnessDelayStart) > brightnessDelayMs) {
+  if (brightnessDelayMs < 0) {
     Serial.println("[handleBrightness]");
 
     int curMins = espRtc.getHour(true) * 60 + espRtc.getMinute();
-    int minsToDay = (6*60 - curMins + 1440) % 1440;
-    int minsToNight = (23*60 - curMins + 1440) % 1440;
+    int minsToDay = (6 * 60 - curMins + 1440) % 1440;
+    int minsToNight = (21 * 60 - curMins + 1440) % 1440;
     Serial.printf("    curMins: %u\n", curMins);
     Serial.printf("  minsToDay: %u\n", minsToDay);
     Serial.printf("minsToNight: %u\n", minsToNight);
@@ -164,22 +177,22 @@ void handleBrightness() {
     Serial.printf(" brightness: %u\n", brightness);
     Serial.printf("  delaySecs: %u\n", delaySecs);
 
-    pwm.write(PWM_PIN, brightness, 200);
+    pwm.write(PWM_PIN, brightness, PWM_FREQUENCY);
 
-    brightnessDelayStart = millis();
-    brightnessDelayMs = delaySecs * 1000; 
+    brightnessDelayMs = delaySecs * 1000;
   }
 }
 
-bool adjustedOnce = true;
-unsigned long timeSyncDelayStart = 0;
-unsigned long timeSyncDelayMs = 5000; // easier to see in serial output
 void handleTimeSync() {
-  if ((millis() - timeSyncDelayStart) > timeSyncDelayMs) {
+  if (timeSyncDelayMs < 0) {
     Serial.println("[handleTimeSync]");
 
+    char format[] = "hh:mm:ss";
+    Serial.printf("DS3231: %s\n", ds3231Rtc.now().toString(format));
+    Serial.printf("   ESP: %s\n", espRtc.getTime());
+
     struct tm timeinfo;
-    getLocalTime(&timeinfo);
+    getLocalTime(&timeinfo); // this adjusts ESP32 RTC
 
     int yr = timeinfo.tm_year + 1900;
     int mt = timeinfo.tm_mon + 1;
@@ -188,47 +201,15 @@ void handleTimeSync() {
     int mi = timeinfo.tm_min;
     int se = timeinfo.tm_sec;
 
-    char format[] = "hh:mm:ss";
-    Serial.printf("DS3231: %s\n", ds3231Rtc.now().toString(format));
-    Serial.printf("   ESP: %s\n", espRtc.getTime());
     Serial.printf("   NTP: %02u:%02u:%02u\n", hr, mi, se);
+    Serial.println("Adjusting DS3231 with NTP time");
+    ds3231Rtc.adjust(DateTime(yr, mt, dy, hr, mi, se));
 
-    // debug to test RTC drift
-    if (!adjustedOnce) {
-      Serial.println("Adjusting RTCs with NTP time");
-      ds3231Rtc.adjust(DateTime(yr, mt, dy, hr, mi, se));
-      espRtc.setTimeStruct(timeinfo);
-
-      adjustedOnce = true;
-    }
-    
-    timeSyncDelayStart = millis();
-    //timeSyncDelayMs = 1000*60*60*24*7; // 1 week
-    timeSyncDelayMs = 1000*60*10;
+    timeSyncDelayMs = 1000 * 60 * 60 * 24;  // 1 day
   }
 }
 
-// unsigned int cycleCount = 0;
-// unsigned long debugDelayStart = 0;
-// unsigned long debugDelayMs = 2000;
-// void handleDebug() {
-//   if ((millis() - debugDelayStart) > debugDelayMs) {
-//     Serial.println("[handleDebug]");
-
-//     unsigned long totalDelayMs = millis() - debugDelayStart;
-//     float cyclesPerSec = cycleCount / ( totalDelayMs / 1000.0 );
-
-//     Serial.printf("  cycleCount: %u\n", cycleCount);
-//     Serial.printf("totalDelayMs: %u\n", totalDelayMs);
-//     Serial.printf("cyclesPerSec: %f\n", cyclesPerSec);
-
-//     cycleCount = 0;
-//     debugDelayStart = millis();
-//   }
-// }
-
-void setup() 
-{
+void setup() {
   Serial.begin(115200);
   Serial.println("Starting setup...");
 
@@ -242,25 +223,27 @@ void setup()
   // RTC init
   if (!ds3231Rtc.begin()) {
     Serial.println("Couldn't find RTC");
-    while (1);
+    while (1)
+      ;
   }
 
   // NTP config
   configTime(GmtOffsetSecs, DstOffsetSecs, NtpServer);
 
-  // tubes init
-  // display(0, 0);
-  // pwm.write(PWM_PIN, 0);
-
   otaSetup();
+
+  // setup delay timer interrupt
+  delayTimer = timerBegin(0, 80, true);  // 80Mhz / 80 = 1Mhz, 1us count
+  timerAttachInterrupt(delayTimer, &delayTimerISR, true);
+  timerAlarmWrite(delayTimer, 1000, true);
+  timerAlarmEnable(delayTimer);
 
   Serial.println("Setup complete");
 }
 
-void loop() 
-{
+void loop() {
+  handleAnimation();
   handleBrightness();
-  handleDisplay();
   handleTimeSync();
   ArduinoOTA.handle();
 }
