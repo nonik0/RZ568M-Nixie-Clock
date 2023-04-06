@@ -48,8 +48,8 @@ const int DstOffsetSecs = 3600;
 
 // used as timers in conjunction with countdownTimerISR
 volatile long animationDelayMs = 0;
-volatile long brightnessDelayMs = 3000;
-volatile long timeSyncDelayMs = 5000;
+volatile long brightnessDelayMs = 0;
+volatile long timeSyncDelayMs = 0;
 
 // tracks state of animation
 byte tensDigit;
@@ -161,8 +161,10 @@ void handleAnimation() {
 }
 
 void handleBrightness() {
-  if (brightnessDelayMs < 0) {
+  // avoid interrupting animation
+  if (!animation && brightnessDelayMs < 0) {
     Serial.println("[handleBrightness]");
+    display(2,2);
 
     int curMins = espRtc.getHour(true) * 60 + espRtc.getMinute();
     int minsToDay = (6 * 60 - curMins + 1440) % 1440;
@@ -180,12 +182,15 @@ void handleBrightness() {
     pwm.write(PWM_PIN, brightness, PWM_FREQUENCY);
 
     brightnessDelayMs = delaySecs * 1000;
+    display(1,1);
   }
 }
 
 void handleTimeSync() {
-  if (timeSyncDelayMs < 0) {
+  // avoid interrupting animation
+  if (!animation && timeSyncDelayMs < 0) {
     Serial.println("[handleTimeSync]");
+    display(4,4);
 
     char format[] = "hh:mm:ss";
     Serial.printf("DS3231: %s\n", ds3231Rtc.now().toString(format));
@@ -206,6 +211,7 @@ void handleTimeSync() {
     ds3231Rtc.adjust(DateTime(yr, mt, dy, hr, mi, se));
 
     timeSyncDelayMs = 1000 * 60 * 60 * 24;  // 1 day
+    display(3,3);
   }
 }
 
@@ -219,6 +225,9 @@ void setup() {
   digitalWrite(PWM_PIN, HIGH);
   digitalWrite(EN_PIN, LOW);
   SPI.begin();
+  digitalWrite(PWM_PIN, LOW);
+
+  display(9,9);
 
   // RTC init
   if (!ds3231Rtc.begin()) {
@@ -226,24 +235,28 @@ void setup() {
     while (1)
       ;
   }
+  display(8,8);
 
   // NTP config
   configTime(GmtOffsetSecs, DstOffsetSecs, NtpServer);
+  display(7,7);
 
   otaSetup();
+  display(6,6);
 
   // setup delay timer interrupt
   delayTimer = timerBegin(0, 80, true);  // 80Mhz / 80 = 1Mhz, 1us count
   timerAttachInterrupt(delayTimer, &delayTimerISR, true);
   timerAlarmWrite(delayTimer, 1000, true);
   timerAlarmEnable(delayTimer);
+  display(5,5);
 
   Serial.println("Setup complete");
 }
 
 void loop() {
-  handleAnimation();
-  handleBrightness();
   handleTimeSync();
+  handleBrightness();
+  handleAnimation();
   ArduinoOTA.handle();
 }
