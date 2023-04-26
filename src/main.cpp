@@ -125,6 +125,8 @@ int roundUpToMultiple(int second, int multiple) {
 
 void handleAnimation() {
   if (animationDelayMs < 0) {
+    DateTime now = ds3231Rtc.now();
+
     if (animation) {
       display(tensDigit, onesDigit);
       tensDigit = (tensDigit + 1) % 10;
@@ -138,16 +140,20 @@ void handleAnimation() {
         animationDelayMs =
             hourDisplayed
                 ? HOURS_MS_DELAY
-                : roundUpToMultiple(espRtc.getSecond(), SECS_MULTIPLE) * 1000;
+                //: roundUpToMultiple(espRtc.getSecond(), SECS_MULTIPLE) * 1000;
+                : roundUpToMultiple(now.second(), SECS_MULTIPLE) * 1000;
       }
     } else {
       if (hourDisplayed) {
-        int minute = espRtc.getMinute();
+        //int minute = espRtc.getMinute();
+        int minute = now.minute();
         tensDigit = minute / 10;
         onesDigit = minute % 10;
         cyclesLeft = 1 * 10;
       } else {
-        int hour = espRtc.getHour();
+        //int hour = espRtc.getHour();
+        int hour = now.hour() % 12;
+        if (hour == 0) hour = 12;
         tensDigit = hour / 10;
         onesDigit = hour % 10;
         cyclesLeft = 10 * 10;
@@ -166,7 +172,10 @@ void handleBrightness() {
     Serial.println("[handleBrightness]");
     display(2,2);
 
-    int curMins = espRtc.getHour(true) * 60 + espRtc.getMinute();
+
+    DateTime now = ds3231Rtc.now();
+    //int curMins = espRtc.getHour(true) * 60 + espRtc.getMinute();
+    int curMins = now.hour() * 60 + now.minute();
     int minsToDay = (6 * 60 - curMins + 1440) % 1440;
     int minsToNight = (21 * 60 - curMins + 1440) % 1440;
     Serial.printf("    curMins: %u\n", curMins);
