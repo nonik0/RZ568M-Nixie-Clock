@@ -5,6 +5,7 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <aREST.h>
 #include <pwmWrite.h>
 
 #include "secrets.h"
@@ -16,6 +17,7 @@
 #define HOURS_MS_DELAY 1000
 #define SECS_MULTIPLE 10
 
+#define MIN_BRIGTHNESS 255
 #define DAY_MODE_BRIGHTNESS 0
 #define NIGHT_MODE_BRIGHTNESS 220
 #define PWM_FREQUENCY 200
@@ -36,10 +38,13 @@ const uint16_t nixieDigitArray[10]{
     0b0000100000000000   // 9
 };
 
+aREST rest = aREST();
+hw_timer_t* delayTimer;
 ESP32Time espRtc;
 RTC_DS3231 ds3231Rtc;
 Pwm pwm;
-hw_timer_t* delayTimer;
+WiFiServer server(80);
+
 
 // NTP config
 const char* NtpServer = "pool.ntp.org";
@@ -56,6 +61,7 @@ byte tensDigit;
 byte onesDigit;
 int cyclesLeft;
 bool animation = false;
+bool tubesOn = true;
 bool hourDisplayed = false;
 
 void IRAM_ATTR delayTimerISR() {
@@ -64,8 +70,8 @@ void IRAM_ATTR delayTimerISR() {
   timeSyncDelayMs--;
 }
 
-void otaSetup() {
-  Serial.println("OTA setting up...");
+void wifiSetup() {
+  Serial.println("Wifi setting up...");
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) {
@@ -73,6 +79,13 @@ void otaSetup() {
     delay(5000);
     ESP.restart();
   }
+
+  Serial.print("Wifi ready, IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void otaSetup() {
+  Serial.println("OTA setting up...");
 
   ArduinoOTA
       .onStart([]() {
@@ -101,12 +114,9 @@ void otaSetup() {
         else if (error == OTA_END_ERROR)
           Serial.println("End Failed");
       });
-
   ArduinoOTA.begin();
 
-  Serial.println("Ready");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+  Serial.println("OTA setup complete.");
 }
 
 void display(uint8_t tube2, uint8_t tube1) {
@@ -116,6 +126,21 @@ void display(uint8_t tube2, uint8_t tube1) {
   SPI.transfer(nixieDigitArray[tube1] >> 8);
   SPI.transfer(nixieDigitArray[tube1]);
   digitalWrite(EN_PIN, HIGH);
+}
+
+int restCommand(String command) {
+  if (command == "on") {
+    Serial.println("Turning tubes on");
+    brightnessDelayMs = 0;
+    tubesOn = true;
+  }
+  else if (command == "off") {
+    Serial.println("Turning tubes off");
+    brightnessDelayMs = 0;
+    tubesOn = false;
+  }
+
+  return 0;
 }
 
 int roundUpToMultiple(int second, int multiple) {
@@ -183,8 +208,9 @@ void handleBrightness() {
     Serial.printf("minsToNight: %u\n", minsToNight);
 
     bool isNight = minsToDay < minsToNight;
-    int brightness = isNight ? NIGHT_MODE_BRIGHTNESS : DAY_MODE_BRIGHTNESS;
     int delaySecs = isNight ? minsToNight : minsToDay;
+    int brightness = isNight ? NIGHT_MODE_BRIGHTNESS : DAY_MODE_BRIGHTNESS;
+    if (!tubesOn) { brightness = MIN_BRIGTHNESS; }
     Serial.printf(" brightness: %u\n", brightness);
     Serial.printf("  delaySecs: %u\n", delaySecs);
 
@@ -192,6 +218,19 @@ void handleBrightness() {
 
     brightnessDelayMs = delaySecs * 1000;
     display(1,1);
+  }
+}
+
+void handleRestRequest() {
+  WiFiClient client = server.available();
+  if (client) {
+    Serial.println("[handleRestRequest] client found...");
+    while(!client.available()){
+      delay(1);
+    }
+
+    Serial.println("[handleRestRequest] handling request...");
+    rest.handle(client);
   }
 }
 
@@ -225,6 +264,7 @@ void handleTimeSync() {
 }
 
 void setup() {
+  delay(5000);
   Serial.begin(115200);
   Serial.println("Starting setup...");
 
@@ -241,8 +281,7 @@ void setup() {
   // RTC init
   if (!ds3231Rtc.begin()) {
     Serial.println("Couldn't find RTC");
-    while (1)
-      ;
+    //while (1) ;
   }
   display(8,8);
 
@@ -250,8 +289,18 @@ void setup() {
   configTime(GmtOffsetSecs, DstOffsetSecs, NtpServer);
   display(7,7);
 
+  // aREST config
+  rest.function((char*)"command", restCommand);
+  rest.variable("tubesOn", &tubesOn);
+  rest.set_id("041823");
+  rest.set_name((char*)"RZ568M-Nixie-Clock");
+
+  wifiSetup();
   otaSetup();
   display(6,6);
+
+  // start rest server
+  server.begin();
 
   // setup delay timer interrupt
   delayTimer = timerBegin(0, 80, true);  // 80Mhz / 80 = 1Mhz, 1us count
@@ -267,5 +316,6 @@ void loop() {
   handleTimeSync();
   handleBrightness();
   handleAnimation();
+  handleRestRequest();
   ArduinoOTA.handle();
 }
