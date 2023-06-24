@@ -45,16 +45,23 @@ RTC_DS3231 ds3231Rtc;
 Pwm pwm;
 WiFiServer server(80);
 
-
 // NTP config
 const char* NtpServer = "pool.ntp.org";
 const long GmtOffsetSecs = -28800;
 const int DstOffsetSecs = 3600;
 
-// used as timers in conjunction with countdownTimerISR
+// used as timers in conjunction with delayTimerISR
 volatile long animationDelayMs = 0;
 volatile long brightnessDelayMs = 0;
 volatile long timeSyncDelayMs = 0;
+volatile long wifiStatusDelayMs = 0;
+
+void IRAM_ATTR delayTimerISR() {
+  animationDelayMs--;
+  brightnessDelayMs--;
+  timeSyncDelayMs--;
+  wifiStatusDelayMs--;
+}
 
 // tracks state of animation
 byte tensDigit;
@@ -64,24 +71,45 @@ bool animation = false;
 bool tubesOn = true;
 bool hourDisplayed = false;
 
-void IRAM_ATTR delayTimerISR() {
-  animationDelayMs--;
-  brightnessDelayMs--;
-  timeSyncDelayMs--;
+// rest api info
+String lastMessage = "";
+String lastMessage2 = "";
+String lastMessage3 = "";
+int wifiDisconnects = 0;
+
+//                  //
+// helper functions //
+//                  //
+
+void display(uint8_t tube2, uint8_t tube1) {
+  digitalWrite(EN_PIN, LOW);
+  SPI.transfer(nixieDigitArray[tube2] >> 8);
+  SPI.transfer(nixieDigitArray[tube2]);
+  SPI.transfer(nixieDigitArray[tube1] >> 8);
+  SPI.transfer(nixieDigitArray[tube1]);
+  digitalWrite(EN_PIN, HIGH);
 }
 
-void wifiSetup() {
-  Serial.println("Wifi setting up...");
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
-    Serial.println("Connection Failed! Rebooting...");
-    delay(5000);
-    ESP.restart();
+void log(String message) {
+  Serial.println(message);
+  lastMessage3 = lastMessage2;
+  lastMessage2 = lastMessage;
+  lastMessage = "[" + ds3231Rtc.now().timestamp(DateTime::TIMESTAMP_FULL) + "] " + message;
+}
+
+int handleRestCommand(String command) {
+  if (command == "on") {
+    log("Turning tubes on");
+    brightnessDelayMs = 0;
+    tubesOn = true;
+  }
+  else if (command == "off") {
+    log("Turning tubes off");
+    brightnessDelayMs = 0;
+    tubesOn = false;
   }
 
-  Serial.print("Wifi ready, IP address: ");
-  Serial.println(WiFi.localIP());
+  return 0;
 }
 
 void otaSetup() {
@@ -119,33 +147,41 @@ void otaSetup() {
   Serial.println("OTA setup complete.");
 }
 
-void display(uint8_t tube2, uint8_t tube1) {
-  digitalWrite(EN_PIN, LOW);
-  SPI.transfer(nixieDigitArray[tube2] >> 8);
-  SPI.transfer(nixieDigitArray[tube2]);
-  SPI.transfer(nixieDigitArray[tube1] >> 8);
-  SPI.transfer(nixieDigitArray[tube1]);
-  digitalWrite(EN_PIN, HIGH);
-}
-
-int restCommand(String command) {
-  if (command == "on") {
-    Serial.println("Turning tubes on");
-    brightnessDelayMs = 0;
-    tubesOn = true;
-  }
-  else if (command == "off") {
-    Serial.println("Turning tubes off");
-    brightnessDelayMs = 0;
-    tubesOn = false;
-  }
-
-  return 0;
-}
-
 int roundUpToMultiple(int second, int multiple) {
   int new_second = ((second / multiple) + 1) * multiple;
   return (new_second - second);
+}
+
+void wifiSetup() {
+  Serial.println("Wifi setting up...");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
+    Serial.println("Connection Failed! Rebooting...");
+    delay(5000);
+    ESP.restart();
+  }
+
+  Serial.print("Wifi ready, IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+//                //
+// loop functions //
+//                //
+
+void checkWifiStatus() {
+  if (wifiStatusDelayMs < 0) {
+    if (WiFi.status() != WL_CONNECTED) {
+      log("Reconnecting to WiFi...");
+      WiFi.disconnect();
+      WiFi.reconnect();
+      wifiDisconnects++;
+      log("Reconnected to WiFi");
+    }
+
+    wifiStatusDelayMs = 60 * 1000; // 1 minute
+  }
 }
 
 void handleAnimation() {
@@ -225,7 +261,8 @@ void handleRestRequest() {
   WiFiClient client = server.available();
   if (client) {
     Serial.println("[handleRestRequest] client found...");
-    while(!client.available()){
+    while (!client.available()){
+      // TODO: timeout
       delay(1);
     }
 
@@ -255,7 +292,7 @@ void handleTimeSync() {
     int se = timeinfo.tm_sec;
 
     Serial.printf("   NTP: %02u:%02u:%02u\n", hr, mi, se);
-    Serial.println("Adjusting DS3231 with NTP time");
+    log("Adjusting DS3231 with NTP time");
     ds3231Rtc.adjust(DateTime(yr, mt, dy, hr, mi, se));
 
     timeSyncDelayMs = 1000 * 60 * 60 * 24;  // 1 day
@@ -290,8 +327,12 @@ void setup() {
   display(7,7);
 
   // aREST config
-  rest.function((char*)"command", restCommand);
+  rest.function((char*)"command", handleRestCommand);
+  rest.variable("lastMessage", &lastMessage);
+  rest.variable("lastMessage2", &lastMessage2);
+  rest.variable("lastMessage2", &lastMessage3);
   rest.variable("tubesOn", &tubesOn);
+  rest.variable("wifiDisconnects", &wifiDisconnects);
   rest.set_id("041823");
   rest.set_name((char*)"RZ568M-Nixie-Clock");
 
@@ -309,7 +350,7 @@ void setup() {
   timerAlarmEnable(delayTimer);
   display(5,5);
 
-  Serial.println("Setup complete");
+  log("Setup complete");
 }
 
 void loop() {
@@ -318,4 +359,6 @@ void loop() {
   handleAnimation();
   handleRestRequest();
   ArduinoOTA.handle();
+
+  checkWifiStatus();
 }
