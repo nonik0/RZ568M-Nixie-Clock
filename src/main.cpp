@@ -17,9 +17,9 @@
 #define HOURS_MS_DELAY 1000
 #define SECS_MULTIPLE 10
 
-#define MIN_BRIGTHNESS 255
-#define DAY_MODE_BRIGHTNESS 0
-#define NIGHT_MODE_BRIGHTNESS 220
+#define MIN_BRIGHTNESS 0 // 255 raw
+#define DAY_MODE_BRIGHTNESS_DEFAULT 100 // 0 raw
+#define NIGHT_MODE_BRIGHTNESS_DEFAULT 14 // 220 raw
 #define PWM_FREQUENCY 200
 
 #define ANIMATION_REFRESH_MS 15
@@ -68,13 +68,19 @@ byte tensDigit;
 byte onesDigit;
 int cyclesLeft;
 bool animation = false;
-bool tubesOn = true;
 bool hourDisplayed = false;
 
+// track state of tube PWM
+bool tubesOn = true;
+bool isNightMode;
+int brightness = 0;
+int brightnessNight = NIGHT_MODE_BRIGHTNESS_DEFAULT;
+int brightnessDay = DAY_MODE_BRIGHTNESS_DEFAULT;
+
 // rest api info
-String lastMessage = "";
-String lastMessage2 = "";
-String lastMessage3 = "";
+String lastLog = "";
+String lastLog2 = "";
+String lastLog3 = "";
 int wifiDisconnects = 0;
 
 //                  //
@@ -92,25 +98,75 @@ void display(uint8_t tube2, uint8_t tube1) {
 
 void log(String message) {
   Serial.println(message);
-  lastMessage3 = lastMessage2;
-  lastMessage2 = lastMessage;
-  lastMessage = "[" + ds3231Rtc.now().timestamp(DateTime::TIMESTAMP_FULL) + "] " + message;
+  lastLog3 = lastLog2;
+  lastLog2 = lastLog;
+  lastLog = "[" + ds3231Rtc.now().timestamp(DateTime::TIMESTAMP_FULL) + "] " + message;
 }
 
-int handleRestCommand(String command) {
-  if (command == "on") {
+int roundUpToMultiple(int second, int multiple) {
+  int new_second = ((second / multiple) + 1) * multiple;
+  return (new_second - second);
+}
+
+int setTubeState(String stateStr) {
+  if (stateStr == "on") {
     log("Turning tubes on");
     brightnessDelayMs = 0;
     tubesOn = true;
+    return 0;
   }
-  else if (command == "off") {
+  else if (stateStr == "off") {
     log("Turning tubes off");
     brightnessDelayMs = 0;
     tubesOn = false;
+    return 0;
+  }
+  else {
+    log("Invalid tube state");
+    return 1;
+  }
+}
+  
+int setBrightness(String brightnessStr) {  
+  int brightness = -1;
+  try {
+    brightness = brightnessStr.toInt();
+  }
+  catch (const std::exception& e) {
+    log("Invalid brightness value " + brightnessStr);
+    return 1;
   }
 
+  if (brightness < 0) {
+    log("Brightness too low: " + brightnessStr);
+    return 1;
+  }
+  else if (brightness > 100) {
+    log("Brightness too high " + brightnessStr);
+    return 1;
+  }
+
+  if (isNightMode) {
+    brightnessNight = brightness;
+  }
+  else {
+    brightnessDay = brightness;
+  }
+
+  log("Setting brightness to " + brightnessStr + "%");
+  brightnessDelayMs = 0;
+  tubesOn = brightness > 0;
   return 0;
 }
+
+int startTimeSync(String notUsed) {
+  timeSyncDelayMs = 0;
+  return 0;
+}
+
+//                 //
+// setup functions //
+//                 //
 
 void otaSetup() {
   Serial.println("OTA setting up...");
@@ -147,9 +203,25 @@ void otaSetup() {
   Serial.println("OTA setup complete.");
 }
 
-int roundUpToMultiple(int second, int multiple) {
-  int new_second = ((second / multiple) + 1) * multiple;
-  return (new_second - second);
+void restSetup() {
+  // aREST config
+  rest.function((char*)"tubeState", setTubeState);
+  rest.function((char*)"brightness", setBrightness);
+  rest.function((char*)"timeSync", startTimeSync);
+  rest.variable("brightness", &brightness);
+  rest.variable("brightnessDay", &brightnessDay);
+  rest.variable("brightnessNight", &brightnessNight);
+  rest.variable("isNightMode", &isNightMode);
+  rest.variable("lastLog", &lastLog);
+  rest.variable("lastLog2", &lastLog2);
+  rest.variable("lastLog3", &lastLog3);
+  rest.variable("tubesOn", &tubesOn);
+  rest.variable("wifiDisconnects", &wifiDisconnects);
+  rest.set_id("041823");
+  rest.set_name((char*)"RZ568M-Nixie-Clock");
+
+  // start rest server
+  server.begin();
 }
 
 void wifiSetup() {
@@ -166,18 +238,65 @@ void wifiSetup() {
   Serial.println(WiFi.localIP());
 }
 
+void setup() {
+  delay(5000);
+  Serial.begin(115200);
+  Serial.println("Starting setup...");
+
+  // initalize Nixie driver pins
+  pinMode(PWM_PIN, OUTPUT);
+  pinMode(EN_PIN, OUTPUT);
+  digitalWrite(PWM_PIN, HIGH);
+  digitalWrite(EN_PIN, LOW);
+  SPI.begin();
+  digitalWrite(PWM_PIN, LOW);
+
+  display(9,9);
+
+  // RTC init
+  if (!ds3231Rtc.begin()) {
+    Serial.println("Couldn't find RTC");
+    //while (1) ;
+  }
+  display(8,8);
+
+  // NTP config
+  configTime(GmtOffsetSecs, DstOffsetSecs, NtpServer);
+  display(7,7);
+  
+  wifiSetup();
+  otaSetup();
+  restSetup();
+  display(6,6);
+
+  // setup delay timer interrupt
+  delayTimer = timerBegin(0, 80, true);  // 80Mhz / 80 = 1Mhz, 1us count
+  timerAttachInterrupt(delayTimer, &delayTimerISR, true);
+  timerAlarmWrite(delayTimer, 1000, true);
+  timerAlarmEnable(delayTimer);
+  display(5,5);
+
+  log("Setup complete");
+}
+
 //                //
 // loop functions //
 //                //
 
 void checkWifiStatus() {
   if (wifiStatusDelayMs < 0) {
-    if (WiFi.status() != WL_CONNECTED) {
-      log("Reconnecting to WiFi...");
-      WiFi.disconnect();
-      WiFi.reconnect();
-      wifiDisconnects++;
-      log("Reconnected to WiFi");
+    try {
+      if (WiFi.status() != WL_CONNECTED) {
+        log("Reconnecting to WiFi...");
+        WiFi.disconnect();
+        WiFi.reconnect();
+        wifiDisconnects++;
+        log("Reconnected to WiFi");
+      }
+    }
+    catch (const std::exception& e) {
+      log("Wifi error:" + String(e.what()));
+      wifiStatusDelayMs = 10 * 60 * 1000; // 10   minutes
     }
 
     wifiStatusDelayMs = 60 * 1000; // 1 minute
@@ -229,41 +348,48 @@ void handleAnimation() {
 
 void handleBrightness() {
   // avoid interrupting animation
-  if (!animation && brightnessDelayMs < 0) {
+  if (/*!animation && */brightnessDelayMs < 0) {
     Serial.println("[handleBrightness]");
-    display(2,2);
+    
+    int delaySecs;
+    if (tubesOn) {
+      DateTime now = ds3231Rtc.now();
+      //int curMins = espRtc.getHour(true) * 60 + espRtc.getMinute();
+      int curMins = now.hour() * 60 + now.minute();
+      int minsToDay = (6 * 60 - curMins + 1440) % 1440; // 6 AM
+      int minsToNight = (21 * 60 - curMins + 1440) % 1440; // 9 PM
 
+      isNightMode = minsToDay < minsToNight;
+      brightness = isNightMode ? brightnessNight : brightnessDay;
+      delaySecs = isNightMode ? minsToDay : minsToNight;
 
-    DateTime now = ds3231Rtc.now();
-    //int curMins = espRtc.getHour(true) * 60 + espRtc.getMinute();
-    int curMins = now.hour() * 60 + now.minute();
-    int minsToDay = (6 * 60 - curMins + 1440) % 1440;
-    int minsToNight = (21 * 60 - curMins + 1440) % 1440;
-    Serial.printf("    curMins: %u\n", curMins);
-    Serial.printf("  minsToDay: %u\n", minsToDay);
-    Serial.printf("minsToNight: %u\n", minsToNight);
-
-    bool isNight = minsToDay < minsToNight;
-    int delaySecs = isNight ? minsToNight : minsToDay;
-    int brightness = isNight ? NIGHT_MODE_BRIGHTNESS : DAY_MODE_BRIGHTNESS;
-    if (!tubesOn) { brightness = MIN_BRIGTHNESS; }
+      Serial.printf("isNightMode: %u\n", isNightMode);
+    }
+    else {
+      brightness = MIN_BRIGHTNESS;
+      delaySecs = INT_MAX;
+    }
+    
     Serial.printf(" brightness: %u\n", brightness);
     Serial.printf("  delaySecs: %u\n", delaySecs);
+    Serial.printf("    tubesOn: %u\n", tubesOn);
 
-    pwm.write(PWM_PIN, brightness, PWM_FREQUENCY);
+    int brightnessRaw = (255.0 - 2.55 * brightness);
+    pwm.write(PWM_PIN, brightnessRaw, PWM_FREQUENCY);
 
     brightnessDelayMs = delaySecs * 1000;
-    display(1,1);
   }
 }
 
 void handleRestRequest() {
   WiFiClient client = server.available();
   if (client) {
-    Serial.println("[handleRestRequest] client found...");
-    while (!client.available()){
-      // TODO: timeout
-      delay(1);
+    unsigned long timeout = millis() + 3000;
+    while (!client.available() && millis() <= timeout) ;
+
+    if (!client.available()) {
+      log("Client connection timed out");
+      return;
     }
 
     Serial.println("[handleRestRequest] handling request...");
@@ -292,65 +418,12 @@ void handleTimeSync() {
     int se = timeinfo.tm_sec;
 
     Serial.printf("   NTP: %02u:%02u:%02u\n", hr, mi, se);
-    log("Adjusting DS3231 with NTP time");
     ds3231Rtc.adjust(DateTime(yr, mt, dy, hr, mi, se));
+    log("Adjusted DS3231 with NTP time");
 
     timeSyncDelayMs = 1000 * 60 * 60 * 24;  // 1 day
     display(3,3);
   }
-}
-
-void setup() {
-  delay(5000);
-  Serial.begin(115200);
-  Serial.println("Starting setup...");
-
-  // initalize Nixie driver pins
-  pinMode(PWM_PIN, OUTPUT);
-  pinMode(EN_PIN, OUTPUT);
-  digitalWrite(PWM_PIN, HIGH);
-  digitalWrite(EN_PIN, LOW);
-  SPI.begin();
-  digitalWrite(PWM_PIN, LOW);
-
-  display(9,9);
-
-  // RTC init
-  if (!ds3231Rtc.begin()) {
-    Serial.println("Couldn't find RTC");
-    //while (1) ;
-  }
-  display(8,8);
-
-  // NTP config
-  configTime(GmtOffsetSecs, DstOffsetSecs, NtpServer);
-  display(7,7);
-
-  // aREST config
-  rest.function((char*)"command", handleRestCommand);
-  rest.variable("lastMessage", &lastMessage);
-  rest.variable("lastMessage2", &lastMessage2);
-  rest.variable("lastMessage2", &lastMessage3);
-  rest.variable("tubesOn", &tubesOn);
-  rest.variable("wifiDisconnects", &wifiDisconnects);
-  rest.set_id("041823");
-  rest.set_name((char*)"RZ568M-Nixie-Clock");
-
-  wifiSetup();
-  otaSetup();
-  display(6,6);
-
-  // start rest server
-  server.begin();
-
-  // setup delay timer interrupt
-  delayTimer = timerBegin(0, 80, true);  // 80Mhz / 80 = 1Mhz, 1us count
-  timerAttachInterrupt(delayTimer, &delayTimerISR, true);
-  timerAlarmWrite(delayTimer, 1000, true);
-  timerAlarmEnable(delayTimer);
-  display(5,5);
-
-  log("Setup complete");
 }
 
 void loop() {
