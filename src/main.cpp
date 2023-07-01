@@ -71,14 +71,14 @@ bool animation = false;
 bool hourDisplayed = false;
 
 // track state of tube PWM
-bool tubesOn = true;
+bool displayOn = true;
 bool isNightMode;
 int brightness = 0;
 int brightnessNight = NIGHT_MODE_BRIGHTNESS_DEFAULT;
 int brightnessDay = DAY_MODE_BRIGHTNESS_DEFAULT;
 
 // rest api info
-String lastLog = "";
+String lastLog1 = "";
 String lastLog2 = "";
 String lastLog3 = "";
 int wifiDisconnects = 0;
@@ -99,8 +99,8 @@ void display(uint8_t tube2, uint8_t tube1) {
 void log(String message) {
   Serial.println(message);
   lastLog3 = lastLog2;
-  lastLog2 = lastLog;
-  lastLog = "[" + ds3231Rtc.now().timestamp(DateTime::TIMESTAMP_FULL) + "] " + message;
+  lastLog2 = lastLog1;
+  lastLog1 = "[" + ds3231Rtc.now().timestamp(DateTime::TIMESTAMP_FULL) + "] " + message;
 }
 
 int roundUpToMultiple(int second, int multiple) {
@@ -108,41 +108,49 @@ int roundUpToMultiple(int second, int multiple) {
   return (new_second - second);
 }
 
-int setTubeState(String stateStr) {
+int restart(String notUsed) {
+  ESP.restart();
+  return 0;
+}
+
+int runTimeSync(String notUsed) {
+  log("Adjusting DS3231 with NTP time");
+  timeSyncDelayMs = 0;
+  return 0;
+}
+
+int setDisplay(String stateStr) {
   if (stateStr == "on") {
-    log("Turning tubes on");
+    log("Turning display on");
     brightnessDelayMs = 0;
-    tubesOn = true;
+    displayOn = true;
     return 0;
   }
   else if (stateStr == "off") {
-    log("Turning tubes off");
+    log("Turning display off");
     brightnessDelayMs = 0;
-    tubesOn = false;
+    displayOn = false;
     return 0;
   }
   else {
-    log("Invalid tube state");
+    log("Invalid display state");
     return 1;
   }
 }
   
-int setBrightness(String brightnessStr) {  
+int setBrightness(String brightnessStr) {
   int brightness = -1;
   try {
     brightness = brightnessStr.toInt();
   }
   catch (const std::exception& e) {
-    log("Invalid brightness value " + brightnessStr);
+    log("Invalid brightness value: " + brightnessStr);
     return 1;
   }
 
-  if (brightness < 0) {
-    log("Brightness too low: " + brightnessStr);
-    return 1;
-  }
-  else if (brightness > 100) {
-    log("Brightness too high " + brightnessStr);
+  brightnessStr = String(brightness);
+  if (brightness < 0|| brightness > 100) {
+    log("Brightness out of range:" + brightnessStr);
     return 1;
   }
 
@@ -153,14 +161,9 @@ int setBrightness(String brightnessStr) {
     brightnessDay = brightness;
   }
 
-  log("Setting brightness to " + brightnessStr + "%");
+  log("Setting brightness to " + brightnessStr);
   brightnessDelayMs = 0;
-  tubesOn = brightness > 0;
-  return 0;
-}
-
-int startTimeSync(String notUsed) {
-  timeSyncDelayMs = 0;
+  displayOn = brightness > 0;
   return 0;
 }
 
@@ -205,17 +208,18 @@ void otaSetup() {
 
 void restSetup() {
   // aREST config
-  rest.function((char*)"tubeState", setTubeState);
-  rest.function((char*)"brightness", setBrightness);
-  rest.function((char*)"timeSync", startTimeSync);
+  rest.function((char*)"restart", restart);
+  rest.function((char*)"runTimeSync", runTimeSync);
+  rest.function((char*)"setDisplay", setDisplay);
+  rest.function((char*)"setBrightness", setBrightness);
   rest.variable("brightness", &brightness);
   rest.variable("brightnessDay", &brightnessDay);
   rest.variable("brightnessNight", &brightnessNight);
+  rest.variable("displayOn", &displayOn);
   rest.variable("isNightMode", &isNightMode);
-  rest.variable("lastLog", &lastLog);
+  rest.variable("lastLog1", &lastLog1);
   rest.variable("lastLog2", &lastLog2);
   rest.variable("lastLog3", &lastLog3);
-  rest.variable("tubesOn", &tubesOn);
   rest.variable("wifiDisconnects", &wifiDisconnects);
   rest.set_id("041823");
   rest.set_name((char*)"RZ568M-Nixie-Clock");
@@ -352,7 +356,7 @@ void handleBrightness() {
     Serial.println("[handleBrightness]");
     
     int delaySecs;
-    if (tubesOn) {
+    if (displayOn) {
       DateTime now = ds3231Rtc.now();
       //int curMins = espRtc.getHour(true) * 60 + espRtc.getMinute();
       int curMins = now.hour() * 60 + now.minute();
@@ -372,7 +376,7 @@ void handleBrightness() {
     
     Serial.printf(" brightness: %u\n", brightness);
     Serial.printf("  delaySecs: %u\n", delaySecs);
-    Serial.printf("    tubesOn: %u\n", tubesOn);
+    Serial.printf("    display: %u\n", displayOn);
 
     int brightnessRaw = (255.0 - 2.55 * brightness);
     pwm.write(PWM_PIN, brightnessRaw, PWM_FREQUENCY);
@@ -419,7 +423,7 @@ void handleTimeSync() {
 
     Serial.printf("   NTP: %02u:%02u:%02u\n", hr, mi, se);
     ds3231Rtc.adjust(DateTime(yr, mt, dy, hr, mi, se));
-    log("Adjusted DS3231 with NTP time");
+    Serial.printf("Adjusted DS3231 with NTP time");
 
     timeSyncDelayMs = 1000 * 60 * 60 * 24;  // 1 day
     display(3,3);
