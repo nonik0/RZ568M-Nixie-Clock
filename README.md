@@ -2,15 +2,15 @@
 
 ## Hardware Used:
 - 2x [R|Z568M Nixie Tube](https://www.daliborfarny.com/)
-- [Nixie Tester PRO Nixie Socket RZ568M](https://nixietester.com/product/pro-nixie-socket-rz568m/)
+- 2x [Nixie Tester PRO Nixie Socket RZ568M](https://nixietester.com/product/pro-nixie-socket-rz568m/)
 - [Nixie Tester Modular Nixie Clock Main PCB](https://www.facebook.com/photo?fbid=545740624202507&set=pcb.545740940869142)
 - [Seeed Studio XIAO ESP32C3](https://www.seeedstudio.com/Seeed-XIAO-ESP32C3-p-5431.html)
 - [Omnixie NCH8200HV Nixie DC-DC HV Boost Power Converter](https://omnixie.com/products/nch8200hv-nixie-hv-power-module)
 - [Hammond 1590XXBK Aluminum Enclosure](https://www.hammfg.com/part/1590XXBK)
 - [DS3231 Module](https://www.amazon.com/HiLetgo-DS3231-Precision-Arduino-Raspberry/dp/B01N1LZSK3)
-- Custom 3D printed insert (TODO: add 3D model)
-- USB-C female port panel mount
-- Breadboard
+- [Panel Mount USB-C Extension Cable](https://www.sparkfun.com/products/15455)
+- Custom 3D printed internal frame
+- Protoboard
 - Various hardware
 
 ## Images
