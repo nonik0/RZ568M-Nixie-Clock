@@ -7,7 +7,7 @@
 - [Seeed Studio XIAO ESP32C3](https://www.seeedstudio.com/Seeed-XIAO-ESP32C3-p-5431.html)
 - [Omnixie NCH8200HV Nixie DC-DC HV Boost Power Converter](https://omnixie.com/products/nch8200hv-nixie-hv-power-module)
 - [Hammond 1590XXBK Aluminum Enclosure](https://www.hammfg.com/part/1590XXBK)
-- [DS3231 Module](https://www.amazon.com/HiLetgo-DS3231-Precision-Arduino-Raspberry/dp/B01N1LZSK3)
+- [DS3231 RTC Module](https://www.amazon.com/HiLetgo-DS3231-Precision-Arduino-Raspberry/dp/B01N1LZSK3)
 - [Panel Mount USB-C Extension Cable](https://www.sparkfun.com/products/15455)
 - Custom 3D printed internal frame
 - Protoboard
