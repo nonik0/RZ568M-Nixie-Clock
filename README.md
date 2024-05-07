@@ -15,12 +15,11 @@
 
 ## Images
 
-
 <img width="400" src="https://github.com/nonik0/RZ568M-Nixie-Clock/assets/17152317/3d646743-0399-4d44-af2b-266ac4c289f8">
-
 <img width="400" src="https://github.com/nonik0/RZ568M-Nixie-Clock/assets/17152317/e431bf03-f557-4e1a-9b4d-5b139fd7782d">
-
 <img width="400" src="https://github.com/nonik0/RZ568M-Nixie-Clock/assets/17152317/a9a81b81-01a3-4532-96f0-8d3979308288">
-
 <img width="400" src="https://github.com/nonik0/RZ568M-Nixie-Clock/assets/17152317/2c8bd5a6-fe4c-4c41-a1b7-5ca85b7151d1">
 
+## Animation
+
+<img width="400" src="https://github.com/nonik0/RZ568M-Nixie-Clock/assets/17152317/2117063a-161e-4269-83e1-3bda05a6c34c">
