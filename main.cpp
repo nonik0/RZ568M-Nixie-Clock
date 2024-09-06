@@ -174,6 +174,8 @@ int setBrightness(String brightnessStr) {
 void otaSetup() {
   Serial.println("OTA setting up...");
 
+  ArduinoOTA.setHostname("RZ568M-Nixie-Clock");
+
   ArduinoOTA
       .onStart([]() {
         String type;
@@ -248,11 +250,11 @@ void setup() {
   Serial.println("Starting setup...");
 
   // initalize Nixie driver pins
+  SPI.begin();
   pinMode(PWM_PIN, OUTPUT);
   pinMode(EN_PIN, OUTPUT);
   digitalWrite(PWM_PIN, HIGH);
   digitalWrite(EN_PIN, LOW);
-  SPI.begin();
   digitalWrite(PWM_PIN, LOW);
 
   display(9,9);
@@ -264,13 +266,14 @@ void setup() {
   }
   display(8,8);
 
-  // NTP config
-  configTime(GmtOffsetSecs, DstOffsetSecs, NtpServer);
-  display(7,7);
-  
+
   wifiSetup();
   otaSetup();
   restSetup();
+  display(7,7);
+  
+  // NTP config
+  configTime(GmtOffsetSecs, DstOffsetSecs, NtpServer);
   display(6,6);
 
   // setup delay timer interrupt
