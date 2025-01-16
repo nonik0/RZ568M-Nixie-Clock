@@ -428,7 +428,7 @@ void handleTimeSync() {
     ds3231Rtc.adjust(DateTime(yr, mt, dy, hr, mi, se));
     Serial.printf("Adjusted DS3231 with NTP time");
 
-    timeSyncDelayMs = 1000 * 60 * 60 * 24;  // 1 day
+    timeSyncDelayMs = 1000 * 60 * 60 * 8;  // 8 hours
     display(3,3);
   }
 }
